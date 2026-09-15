@@ -1,6 +1,6 @@
 {
   "buildCommand": "pnpm --filter @workspace/nexhse-africa run build",
-  "outputDirectory": "dist",
+  "outputDirectory": "artifacts/nexhse-africa/dist",
   "framework": "vite",
   "env": {
     "PORT": "5000",
