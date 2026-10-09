@@ -1,5 +1,33 @@
 User-agent: *
 Allow: /
-Disallow: /admin
-Host: nexhse.co.ke
-Sitemap: https://nexhse.co.ke/sitemap.xml
+Disallow: /admin/
+Disallow: /api/
+Disallow: /storage-bridge.html
+Disallow: /checkout
+Disallow: /shop/checkout
+Host: www.nexhse.co.ke
+Sitemap: https://www.nexhse.co.ke/sitemap.xml
+
+User-agent: Googlebot
+Allow: /
+Disallow: /admin/
+Disallow: /api/
+Disallow: /checkout
+Disallow: /shop/checkout
+
+User-agent: Bingbot
+Allow: /
+Disallow: /admin/
+Disallow: /api/
+Disallow: /checkout
+Disallow: /shop/checkout
+
+User-agent: DuckDuckBot
+Allow: /
+Disallow: /admin/
+Disallow: /api/
+
+User-agent: Yandex
+Allow: /
+Disallow: /admin/
+Disallow: /api/

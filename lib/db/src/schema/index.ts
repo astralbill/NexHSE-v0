@@ -1,1 +1,1 @@
-export * from './site-store';
+export * from './site-store.js';

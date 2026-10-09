@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { addOrderEvent, addServiceTicketFollowup, cancelShopOrderAndRestock, deleteShopProduct, deleteShopPromotion, disableService, findClientByEmail, findClientById, findShopOrder, findShopProductBySku, findShopPromotionByCode, listBlogPosts, listClientsForUser, listOrderEvents, listServices, listServiceTicketFollowups, listServiceTickets, listShopOrders, listShopOrdersForEmails, listShopProducts, listShopPromotions, readSiteStoreValue, seedClientsFromOrders, updateClient, updateServiceTicketWorkflow, updateShopOrderWorkflow, upsertBlogPost, upsertClient, upsertService, upsertServices, upsertServiceTicket, upsertShopOrder, upsertShopProduct, upsertShopPromotion, writeSiteStoreValue } from '@workspace/db';
+import { addOrderEvent, addServiceTicketFollowup, cancelShopOrderAndRestock, createInvoice, createQuote, deleteShopProduct, deleteShopPromotion, disableService, findClientByEmail, findClientById, findInvoiceById, findInvoiceByQuoteId, findQuoteById, findShopOrder, findShopProductBySku, findShopPromotionByCode, listBlogPosts, listClientsForUser, listClientsWithOrderSummary, listInvoicesForUser, listOrderEvents, listQuotesForUser, listServices, listServiceTicketFollowups, listServiceTickets, listShopOrders, listShopOrdersForEmails, listShopProducts, listShopPromotions, readSiteStoreValue, seedClientsFromOrders, updateClient, updateInvoice, updateQuote, updateServiceTicketWorkflow, updateShopOrderWorkflow, upsertBlogPost, upsertClient, upsertService, upsertServices, upsertServiceTicket, upsertShopOrder, upsertShopProduct, upsertShopPromotion, writeSiteStoreValue } from '@workspace/db';
 import * as schema from '@workspace/db/schema';
-import { getActiveAdminSession, isTrustedOrigin } from '../lib/api/admin-session';
+import { getActiveAdminSession, isTrustedOrigin } from '../lib/api/admin-session.js';
 
 const slugify = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 const stringArray = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').slice(0, 100) : [];
@@ -74,7 +74,7 @@ export default async function handler(req: any, res: any) {
         return { ...product, basePrice: product.price, price: product.price - (matching?.discount ?? 0), promotionName: matching?.promotion.name ?? null, promotionCode: matching?.promotion.code ?? null };
       });
       res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300');
-      return res.status(200).json({ items });
+      return res.status(200).json({ items, hiddenIds: products.filter(product => !product.active).map(product => product.id) });
     }
 
     if (req.method === 'GET' && resource === 'services') {
@@ -148,14 +148,18 @@ export default async function handler(req: any, res: any) {
         await seedClientsFromOrders([...historicalClients.values()]);
         await writeSiteStoreValue('nexhse-clients-normalized-v1', true);
       }
-      const clients = await listClientsForUser(session.userId, session.role === 'owner');
-      const allowedEmails = new Set(clients.map(client => client.email.toLowerCase()));
-      const visibleOrders = session.role === 'owner' ? await listShopOrders() : await listShopOrdersForEmails([...allowedEmails]);
-      const items = clients.map(client => {
-        const clientOrders = visibleOrders.filter(order => order.email.toLowerCase() === client.email.toLowerCase());
-        return { ...client, orders: clientOrders.length, spend: clientOrders.reduce((total, order) => total + order.total, 0), lastOrder: clientOrders[0]?.createdAt ?? null };
-      });
+      const items = await listClientsWithOrderSummary(session.userId, session.role === 'owner');
       return res.status(200).json({ items });
+    }
+
+    if (req.method === 'GET' && resource === 'quotes') {
+      if (!session) return res.status(401).json({ error: 'Admin session required' });
+      return res.status(200).json({ items: await listQuotesForUser(session.userId, session.role === 'owner') });
+    }
+
+    if (req.method === 'GET' && resource === 'invoices') {
+      if (!session) return res.status(401).json({ error: 'Admin session required' });
+      return res.status(200).json({ items: await listInvoicesForUser(session.userId, session.role === 'owner') });
     }
 
     if (req.method === 'GET' && resource === 'tickets') {
@@ -200,6 +204,91 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({ updated: true });
     }
 
+    if (resource === 'quotes' && req.method === 'POST') {
+      const quote = req.body?.quote;
+      if (!quote || !validText(quote.clientName, 180) || typeof quote.email !== 'string' || !/^\S+@\S+\.\S+$/.test(quote.email.trim()) || !validText(quote.need, 2000)) {
+        return res.status(400).json({ error: 'A valid client name, email, and requested service are required' });
+      }
+      const amount = Number(quote.amount ?? 0);
+      if (!Number.isSafeInteger(amount) || amount < 0) return res.status(400).json({ error: 'Quote amount must be a non-negative whole KES amount' });
+      const quoteId = randomUUID();
+      const year = new Date().getFullYear();
+      const item = await createQuote({
+        id: quoteId,
+        quoteNumber: `NQ-${year}-${quoteId.slice(0, 8).toUpperCase()}`,
+        clientId: typeof quote.clientId === 'string' ? quote.clientId : null,
+        clientName: quote.clientName.trim(),
+        company: typeof quote.company === 'string' ? quote.company.trim() : '',
+        email: quote.email.trim().toLowerCase(),
+        phone: typeof quote.phone === 'string' ? quote.phone.trim() : '',
+        need: quote.need.trim(),
+        location: typeof quote.location === 'string' ? quote.location.trim() : '',
+        timeline: typeof quote.timeline === 'string' ? quote.timeline.trim() : '',
+        amount,
+        currency: 'KES',
+        status: 'draft',
+        validUntil: quote.validUntil ? new Date(quote.validUntil) : null,
+        createdBy: session.userId,
+      });
+      return res.status(201).json({ item });
+    }
+
+    if (resource === 'quotes' && req.method === 'PATCH') {
+      if (!id) return res.status(400).json({ error: 'Quote id is required' });
+      const current = await findQuoteById(id);
+      if (!current) return res.status(404).json({ error: 'Quote not found' });
+      if (current.createdBy !== session.userId && session.role !== 'owner') return res.status(403).json({ error: 'Quote access required' });
+      const { amount, status, validUntil } = req.body ?? {};
+      const statuses = ['requested', 'draft', 'sent', 'accepted', 'declined', 'expired'];
+      if (status !== undefined && !statuses.includes(status)) return res.status(400).json({ error: 'Invalid quote status' });
+      if (amount !== undefined && (!Number.isSafeInteger(Number(amount)) || Number(amount) < 0)) return res.status(400).json({ error: 'Quote amount must be a non-negative whole KES amount' });
+      const updated = await updateQuote(id, { ...(amount !== undefined ? { amount: Number(amount) } : {}), ...(status ? { status } : {}), ...(validUntil !== undefined ? { validUntil: validUntil ? new Date(validUntil) : null } : {}) });
+      return res.status(200).json({ item: updated });
+    }
+
+    if (resource === 'invoices' && req.method === 'POST') {
+      const { quoteId, dueAt } = req.body ?? {};
+      if (typeof quoteId !== 'string' || !quoteId) return res.status(400).json({ error: 'An accepted quote is required to issue an invoice' });
+      const quote = await findQuoteById(quoteId);
+      if (!quote) return res.status(404).json({ error: 'Quote not found' });
+      if (quote.createdBy !== session.userId && session.role !== 'owner') return res.status(403).json({ error: 'Quote access required' });
+      if (quote.status !== 'accepted' || quote.amount < 1) return res.status(409).json({ error: 'Only an accepted, priced quote can be invoiced' });
+      if (await findInvoiceByQuoteId(quote.id)) return res.status(409).json({ error: 'An invoice already exists for this quote' });
+      const invoiceId = randomUUID();
+      const now = new Date();
+      const dueDate = dueAt ? new Date(dueAt) : new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+      if (!Number.isFinite(dueDate.getTime())) return res.status(400).json({ error: 'Invoice due date is invalid' });
+      const item = await createInvoice({
+        id: invoiceId,
+        invoiceNumber: `NXI-${now.getFullYear()}-${invoiceId.slice(0, 8).toUpperCase()}`,
+        quoteId: quote.id,
+        quoteNumber: quote.quoteNumber,
+        clientId: quote.clientId,
+        clientName: quote.clientName,
+        company: quote.company,
+        email: quote.email,
+        phone: quote.phone,
+        description: quote.need,
+        amount: quote.amount,
+        currency: quote.currency,
+        status: 'issued',
+        dueAt: dueDate,
+        createdBy: session.userId,
+      });
+      return res.status(201).json({ item });
+    }
+
+    if (resource === 'invoices' && req.method === 'PATCH') {
+      if (!id) return res.status(400).json({ error: 'Invoice id is required' });
+      const current = await findInvoiceById(id);
+      if (!current) return res.status(404).json({ error: 'Invoice not found' });
+      if (current.createdBy !== session.userId && session.role !== 'owner') return res.status(403).json({ error: 'Invoice access required' });
+      const { status, dueAt } = req.body ?? {};
+      if (status !== undefined && !['issued', 'paid', 'overdue', 'void'].includes(status)) return res.status(400).json({ error: 'Invalid invoice status' });
+      const updated = await updateInvoice(id, { ...(status ? { status } : {}), ...(dueAt !== undefined ? { dueAt: dueAt ? new Date(dueAt) : null } : {}) });
+      return res.status(200).json({ item: updated });
+    }
+
     if (resource === 'products' && ['POST', 'PUT'].includes(req.method)) {
       const product = req.body?.product;
       if (!product || !validText(product.name, 180) || !validText(product.category, 100) || !Number.isInteger(Number(product.price)) || Number(product.price) < 0 || !Number.isInteger(Number(product.stock)) || Number(product.stock) < 0) return res.status(400).json({ error: 'Invalid product fields' });
@@ -236,7 +325,34 @@ export default async function handler(req: any, res: any) {
 
     if (resource === 'products' && req.method === 'DELETE') {
       if (!id) return res.status(400).json({ error: 'Product id is required' });
-      await deleteShopProduct(slugify(id));
+      const productId = slugify(id);
+      const existing = (await listShopProducts()).find(product => product.id === productId);
+      if (existing) {
+        await upsertShopProduct({ ...existing, active: false });
+      } else {
+        const product = req.body?.product;
+        if (!product || !validText(product.name, 180) || !validText(product.category, 100)) return res.status(404).json({ error: 'Product not found' });
+        await upsertShopProduct({
+          id: productId,
+          sku: typeof product.sku === 'string' && product.sku.trim() ? product.sku.trim().toUpperCase() : `NX-${productId.toUpperCase()}`,
+          name: product.name.trim(),
+          category: product.category.trim(),
+          price: Number.isInteger(Number(product.price)) && Number(product.price) >= 0 ? Number(product.price) : 0,
+          stock: Number.isInteger(Number(product.stock)) && Number(product.stock) >= 0 ? Number(product.stock) : 0,
+          image: typeof product.image === 'string' ? product.image : '',
+          imageBackground: typeof product.imageBackground === 'string' ? product.imageBackground : '#ffffff',
+          description: typeof product.description === 'string' ? product.description : '',
+          longDescription: typeof product.longDescription === 'string' ? product.longDescription : '',
+          seoTitle: typeof product.seoTitle === 'string' ? product.seoTitle : product.name.trim(),
+          seoDescription: typeof product.seoDescription === 'string' ? product.seoDescription : '',
+          keywords: stringArray(product.keywords),
+          features: stringArray(product.features),
+          useCases: stringArray(product.useCases),
+          brand: typeof product.brand === 'string' ? product.brand : 'NexHSE Africa',
+          condition: typeof product.condition === 'string' ? product.condition : 'New',
+          active: false,
+        });
+      }
       const legacy = await readSiteStoreValue('nexhse-shop-products');
       if (Array.isArray(legacy)) await writeSiteStoreValue('nexhse-shop-products', legacy.filter(item => slugify(item.id ?? item.name ?? '') !== slugify(id)));
       return res.status(200).json({ deleted: true });

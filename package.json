@@ -1,20 +1,25 @@
 {
   "name": "workspace",
   "version": "0.0.0",
+  "type": "module",
   "license": "MIT",
   "scripts": {
     "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
     "dev": "pnpm --filter @workspace/nexhse-africa dev",
-    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "build": "pnpm run typecheck && pnpm --filter @workspace/db run build:runtime && pnpm --dir scripts run generate:sitemap && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck && pnpm run typecheck:api",
     "typecheck:api": "tsc -p api/tsconfig.json"
   },
   "private": true,
   "dependencies": {
-    "@workspace/db": "workspace:*",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "@neondatabase/serverless": "^1.2.0",
     "@replit/connectors-sdk": "^0.4.1",
+    "@supabase/supabase-js": "^2.117.2",
+    "@vercel/blob": "^2.8.0",
+    "@workspace/db": "workspace:*",
+    "stripe": "^23.0.0",
     "zod": "catalog:"
   },
   "devDependencies": {

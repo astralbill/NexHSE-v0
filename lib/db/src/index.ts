@@ -1,15 +1,15 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
+import { and, desc, eq, gte, inArray, max, sql } from 'drizzle-orm';
+import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
-import * as schema from './schema';
+import * as schema from './schema/index.js';
 
 const { Pool } = pg;
 
 let database: ReturnType<typeof drizzle> | undefined;
 
 function resolveDatabaseUrl() {
-  return process.env.DATABASE_URL ?? process.env.POSTGRES_URL ?? process.env.POSTGRES_URL_NON_POOLING ?? null;
+  return process.env.DATABASE_URL ?? process.env.v0_DATABASE_URL ?? process.env.nexhsevo_DATABASE_URL ?? process.env.POSTGRES_URL ?? process.env.v0_POSTGRES_URL ?? process.env.POSTGRES_URL_NON_POOLING ?? null;
 }
 
 export function getDatabase() {
@@ -28,7 +28,7 @@ export function getDatabase() {
   return database;
 }
 
-export * from './schema';
+export * from './schema/index.js';
 
 export async function readSiteStoreValue(key: string) {
   const db = getDatabase();
@@ -135,6 +135,81 @@ export async function findShopOrder(id: string) {
   return order ?? null;
 }
 
+export async function findShopOrderByMpesaRequestId(checkoutRequestId: string) {
+  const [order] = await getDatabase().select().from(schema.shopOrdersTable).where(eq(schema.shopOrdersTable.mpesaCheckoutRequestId, checkoutRequestId)).limit(1);
+  return order ?? null;
+}
+
+export async function findShopOrderPaymentStatus(id: string, token: string) {
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  const [order] = await getDatabase().select({ id: schema.shopOrdersTable.id, paymentStatus: schema.shopOrdersTable.paymentStatus })
+    .from(schema.shopOrdersTable)
+    .where(and(eq(schema.shopOrdersTable.id, id), eq(schema.shopOrdersTable.paymentStatusTokenHash, tokenHash)))
+    .limit(1);
+  return order ?? null;
+}
+
+export async function hasShopOrderPaymentToken(id: string, token: string) {
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  const [order] = await getDatabase().select({ id: schema.shopOrdersTable.id })
+    .from(schema.shopOrdersTable)
+    .where(and(eq(schema.shopOrdersTable.id, id), eq(schema.shopOrdersTable.paymentStatusTokenHash, tokenHash)))
+    .limit(1);
+  return Boolean(order);
+}
+
+export async function saveShopOrderPaymentReference(id: string, reference: { stripeSessionId?: string; stripeCheckoutUrl?: string; mpesaCheckoutRequestId?: string }) {
+  const [order] = await getDatabase().update(schema.shopOrdersTable).set({ ...reference, updatedAt: new Date() }).where(eq(schema.shopOrdersTable.id, id)).returning();
+  return order ?? null;
+}
+
+export async function reserveShopOrderMpesaRequest(id: string) {
+  const db = getDatabase();
+  return db.transaction(async transaction => {
+    const [order] = await transaction.select({ requestId: schema.shopOrdersTable.mpesaCheckoutRequestId })
+      .from(schema.shopOrdersTable).where(eq(schema.shopOrdersTable.id, id)).limit(1).for('update');
+    if (!order || order.requestId) return null;
+    const requestId = `pending-${randomUUID()}`;
+    await transaction.update(schema.shopOrdersTable).set({ mpesaCheckoutRequestId: requestId, updatedAt: new Date() }).where(eq(schema.shopOrdersTable.id, id));
+    return requestId;
+  });
+}
+
+export async function completeShopOrderMpesaRequest(id: string, reservationId: string, providerRequestId: string) {
+  const [order] = await getDatabase().update(schema.shopOrdersTable).set({ mpesaCheckoutRequestId: providerRequestId, updatedAt: new Date() })
+    .where(and(eq(schema.shopOrdersTable.id, id), eq(schema.shopOrdersTable.mpesaCheckoutRequestId, reservationId))).returning();
+  return order ?? null;
+}
+
+export async function releaseShopOrderMpesaRequest(id: string, reservationId: string) {
+  await getDatabase().update(schema.shopOrdersTable).set({ mpesaCheckoutRequestId: null, updatedAt: new Date() })
+    .where(and(eq(schema.shopOrdersTable.id, id), eq(schema.shopOrdersTable.mpesaCheckoutRequestId, reservationId)));
+}
+
+export async function updateShopOrderPaymentStatus(id: string, status: 'paid' | 'failed', note: string, paymentReference?: string | null) {
+  const db = getDatabase();
+  return db.transaction(async transaction => {
+    const [order] = await transaction.select().from(schema.shopOrdersTable).where(eq(schema.shopOrdersTable.id, id)).limit(1).for('update');
+    if (!order) return null;
+    if (order.paymentStatus === 'paid' || order.paymentStatus === status) return order;
+
+    const [updated] = await transaction.update(schema.shopOrdersTable).set({
+      paymentStatus: status,
+      ...(paymentReference ? { paymentReference } : {}),
+      updatedAt: new Date(),
+    }).where(eq(schema.shopOrdersTable.id, id)).returning();
+    await transaction.insert(schema.orderEventsTable).values({
+      id: randomUUID(),
+      orderId: id,
+      eventType: 'payment-update',
+      status,
+      note: note.slice(0, 2000),
+      createdBy: 'payment-provider',
+    });
+    return updated ?? null;
+  });
+}
+
 export async function upsertShopOrder(order: typeof schema.shopOrdersTable.$inferInsert) {
   const db = getDatabase();
   const now = new Date();
@@ -180,6 +255,30 @@ export async function listClientsForUser(userId: string, isOwner = false) {
   return isOwner ? query : query.where(eq(schema.clientsTable.createdBy, userId));
 }
 
+export async function listClientsWithOrderSummary(userId: string, isOwner = false) {
+  const db = getDatabase();
+  const query = db.select({
+    id: schema.clientsTable.id,
+    email: schema.clientsTable.email,
+    name: schema.clientsTable.name,
+    phone: schema.clientsTable.phone,
+    company: schema.clientsTable.company,
+    industry: schema.clientsTable.industry,
+    location: schema.clientsTable.location,
+    notes: schema.clientsTable.notes,
+    createdBy: schema.clientsTable.createdBy,
+    createdAt: schema.clientsTable.createdAt,
+    orderCount: sql<number>`count(${schema.shopOrdersTable.id})::int`,
+    spend: sql<number>`coalesce(sum(${schema.shopOrdersTable.total}), 0)::int`,
+    lastOrder: max(schema.shopOrdersTable.createdAt),
+  }).from(schema.clientsTable)
+    .leftJoin(schema.shopOrdersTable, sql`lower(${schema.shopOrdersTable.email}) = lower(${schema.clientsTable.email})`);
+
+  return isOwner
+    ? query.groupBy(schema.clientsTable.id).orderBy(desc(schema.clientsTable.createdAt))
+    : query.where(eq(schema.clientsTable.createdBy, userId)).groupBy(schema.clientsTable.id).orderBy(desc(schema.clientsTable.createdAt));
+}
+
 export async function seedClientsFromOrders(clients: typeof schema.clientsTable.$inferInsert[]) {
   if (!clients.length) return;
   await getDatabase().insert(schema.clientsTable).values(clients).onConflictDoNothing();
@@ -206,6 +305,53 @@ export async function upsertClient(client: typeof schema.clientsTable.$inferInse
 
 export async function updateClient(id: string, changes: Partial<typeof schema.clientsTable.$inferInsert>) {
   await getDatabase().update(schema.clientsTable).set({ ...changes, updatedAt: new Date() }).where(eq(schema.clientsTable.id, id));
+}
+
+export async function listQuotesForUser(userId: string, isOwner = false) {
+  const db = getDatabase();
+  const query = db.select().from(schema.quotesTable).orderBy(desc(schema.quotesTable.createdAt));
+  return isOwner ? query : query.where(eq(schema.quotesTable.createdBy, userId));
+}
+
+export async function findQuoteById(id: string) {
+  const [quote] = await getDatabase().select().from(schema.quotesTable).where(eq(schema.quotesTable.id, id)).limit(1);
+  return quote ?? null;
+}
+
+export async function createQuote(quote: typeof schema.quotesTable.$inferInsert) {
+  await getDatabase().insert(schema.quotesTable).values(quote);
+  return findQuoteById(quote.id);
+}
+
+export async function updateQuote(id: string, changes: Partial<typeof schema.quotesTable.$inferInsert>) {
+  await getDatabase().update(schema.quotesTable).set({ ...changes, updatedAt: new Date() }).where(eq(schema.quotesTable.id, id));
+  return findQuoteById(id);
+}
+
+export async function listInvoicesForUser(userId: string, isOwner = false) {
+  const db = getDatabase();
+  const query = db.select().from(schema.invoicesTable).orderBy(desc(schema.invoicesTable.createdAt));
+  return isOwner ? query : query.where(eq(schema.invoicesTable.createdBy, userId));
+}
+
+export async function findInvoiceById(id: string) {
+  const [invoice] = await getDatabase().select().from(schema.invoicesTable).where(eq(schema.invoicesTable.id, id)).limit(1);
+  return invoice ?? null;
+}
+
+export async function createInvoice(invoice: typeof schema.invoicesTable.$inferInsert) {
+  await getDatabase().insert(schema.invoicesTable).values(invoice);
+  return findInvoiceById(invoice.id);
+}
+
+export async function findInvoiceByQuoteId(quoteId: string) {
+  const [invoice] = await getDatabase().select().from(schema.invoicesTable).where(eq(schema.invoicesTable.quoteId, quoteId)).limit(1);
+  return invoice ?? null;
+}
+
+export async function updateInvoice(id: string, changes: Partial<typeof schema.invoicesTable.$inferInsert>) {
+  await getDatabase().update(schema.invoicesTable).set({ ...changes, updatedAt: new Date() }).where(eq(schema.invoicesTable.id, id));
+  return findInvoiceById(id);
 }
 
 export async function listShopPromotions() {

@@ -1,4 +1,4 @@
-import { boolean, index, integer, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const siteStoreTable = pgTable('nexhse_site_store', {
   key: text('key').primaryKey(),
@@ -39,6 +39,11 @@ export const shopOrdersTable = pgTable('nexhse_shop_orders', {
   notes: text('notes'),
   paymentMethod: text('payment_method').notNull(),
   paymentStatus: text('payment_status').notNull(),
+  stripeSessionId: text('stripe_session_id'),
+  stripeCheckoutUrl: text('stripe_checkout_url'),
+  mpesaCheckoutRequestId: text('mpesa_checkout_request_id'),
+  paymentReference: text('payment_reference'),
+  paymentStatusTokenHash: text('payment_status_token_hash'),
   orderStatus: text('order_status').notNull(),
   promotionCode: text('promotion_code'),
   discount: integer('discount').notNull().default(0),
@@ -52,7 +57,13 @@ export const shopOrdersTable = pgTable('nexhse_shop_orders', {
   items: jsonb('items').notNull().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-}, table => [index('nexhse_shop_orders_created_at_idx').on(table.createdAt), index('nexhse_shop_orders_status_idx').on(table.orderStatus), index('nexhse_shop_orders_email_created_idx').on(table.email, table.createdAt)]);
+}, table => [
+  index('nexhse_shop_orders_created_at_idx').on(table.createdAt),
+  index('nexhse_shop_orders_status_idx').on(table.orderStatus),
+  index('nexhse_shop_orders_email_created_idx').on(table.email, table.createdAt),
+  uniqueIndex('nexhse_shop_orders_stripe_session_idx').on(table.stripeSessionId),
+  uniqueIndex('nexhse_shop_orders_mpesa_request_idx').on(table.mpesaCheckoutRequestId),
+]);
 
 export const shopPromotionsTable = pgTable('nexhse_shop_promotions', {
   id: text('id').primaryKey(),
@@ -84,6 +95,53 @@ export const clientsTable = pgTable('nexhse_clients', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, table => [index('nexhse_clients_created_by_idx').on(table.createdBy, table.createdAt)]);
+
+export const quotesTable = pgTable('nexhse_quotes', {
+  id: text('id').primaryKey(),
+  quoteNumber: text('quote_number').notNull().unique(),
+  clientId: text('client_id'),
+  clientName: text('client_name').notNull(),
+  company: text('company').notNull().default(''),
+  email: text('email').notNull(),
+  phone: text('phone').notNull().default(''),
+  need: text('need').notNull(),
+  location: text('location').notNull().default(''),
+  timeline: text('timeline').notNull().default(''),
+  amount: integer('amount').notNull().default(0),
+  currency: text('currency').notNull().default('KES'),
+  status: text('status').notNull().default('requested'),
+  validUntil: timestamp('valid_until', { withTimezone: true }),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  index('nexhse_quotes_status_created_idx').on(table.status, table.createdAt),
+  index('nexhse_quotes_client_idx').on(table.clientId, table.createdAt),
+]);
+
+export const invoicesTable = pgTable('nexhse_invoices', {
+  id: text('id').primaryKey(),
+  invoiceNumber: text('invoice_number').notNull().unique(),
+  quoteId: text('quote_id').notNull(),
+  quoteNumber: text('quote_number').notNull(),
+  clientId: text('client_id'),
+  clientName: text('client_name').notNull(),
+  company: text('company').notNull().default(''),
+  email: text('email').notNull(),
+  phone: text('phone').notNull().default(''),
+  description: text('description').notNull(),
+  amount: integer('amount').notNull(),
+  currency: text('currency').notNull().default('KES'),
+  status: text('status').notNull().default('issued'),
+  dueAt: timestamp('due_at', { withTimezone: true }),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  uniqueIndex('nexhse_invoices_quote_idx').on(table.quoteId),
+  index('nexhse_invoices_status_due_idx').on(table.status, table.dueAt),
+  index('nexhse_invoices_client_idx').on(table.clientId, table.createdAt),
+]);
 
 export const serviceTicketsTable = pgTable('nexhse_service_tickets', {
   id: text('id').primaryKey(),

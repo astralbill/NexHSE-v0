@@ -5,17 +5,28 @@ const cookieName = 'nexhse_admin_session';
 const sessionDurationSeconds = 60 * 60 * 12;
 const trustedOrigins = new Set(['https://nexhse.co.ke', 'https://www.nexhse.co.ke', 'https://shop.nexhse.co.ke', 'https://admin.nexhse.co.ke']);
 
+export function getAdminEnv(name: string) {
+  return process.env[name] ?? process.env[`v0_${name}`] ?? process.env[`nexhsevo_${name}`] ?? '';
+}
+
 export function isTrustedOrigin(req: any) {
   const origin = String(req.headers?.origin ?? '');
   if (!origin) return process.env.NODE_ENV !== 'production';
-  const configuredOrigins = (process.env.SITE_ALLOWED_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean);
-  return trustedOrigins.has(origin) || configuredOrigins.includes(origin);
+  const configuredOrigins = getAdminEnv('SITE_ALLOWED_ORIGINS').split(',').map(value => value.trim()).filter(Boolean);
+  if (trustedOrigins.has(origin) || configuredOrigins.includes(origin)) return true;
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const hostname = new URL(origin).hostname;
+      return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+    } catch { return false; }
+  }
+  return false;
 }
 
 export type AdminSession = { userId: string; email: string; role: string; expiresAt: number };
 
 function secret() {
-  return process.env.ADMIN_SESSION_SECRET ?? process.env.ADMIN_API_KEY ?? process.env.ADMIN_PASSWORD ?? '';
+  return getAdminEnv('ADMIN_SESSION_SECRET') || getAdminEnv('ADMIN_API_KEY') || getAdminEnv('ADMIN_PASSWORD');
 }
 
 function sign(payload: string) {
@@ -59,7 +70,7 @@ export function getAdminSession(req: any): AdminSession | null {
 }
 
 export function verifyAdminKey(candidate: unknown) {
-  const configured = process.env.ADMIN_API_KEY ?? '';
+  const configured = getAdminEnv('ADMIN_API_KEY');
   if (!configured || typeof candidate !== 'string') return false;
   const expected = Buffer.from(configured);
   const supplied = Buffer.from(candidate);
@@ -67,7 +78,7 @@ export function verifyAdminKey(candidate: unknown) {
 }
 
 export function verifyAdminPassword(candidate: unknown) {
-  const configured = process.env.ADMIN_PASSWORD;
+  const configured = getAdminEnv('ADMIN_PASSWORD');
   if (!configured || typeof candidate !== 'string') return false;
   const expected = Buffer.from(configured);
   const supplied = Buffer.from(candidate);

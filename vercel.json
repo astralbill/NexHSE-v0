@@ -8,6 +8,14 @@
   },
   "rewrites": [
     { "source": "/robots.txt", "has": [{ "type": "host", "value": "admin.nexhse.co.ke" }], "destination": "/admin-robots.txt" },
+    { "source": "/api/admin-invitations/accept", "destination": "/api/admin-invitations?action=accept" },
+    { "source": "/api/payments/config", "destination": "/api/payments?action=config" },
+    { "source": "/api/payments/order-status", "destination": "/api/payments?action=order-status" },
+    { "source": "/api/payments/stripe/create-checkout-session", "destination": "/api/payments?action=stripe-create-checkout" },
+    { "source": "/api/payments/mpesa/stk-push", "destination": "/api/payments?action=mpesa-stk-push" },
+    { "source": "/api/payments/stripe/webhook", "destination": "/api/payments?action=stripe-webhook" },
+    { "source": "/api/payments/mpesa/callback", "destination": "/api/payments?action=mpesa-callback" },
+    { "source": "/api/supabase/config", "destination": "/api/supabase?action=config" },
     { "source": "/((?!assets/|api/|robots.txt|sitemap.xml|llms.txt|site.webmanifest|storage-bridge.html|favicon.svg|logo.png).*)", "destination": "/index.html" }
   ]
 }

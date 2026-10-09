@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { articles, faqs, getArticleUrl, getServiceUrl, products, services } from '../artifacts/api-server/src/lib/nexhse-content';
+import { articles, faqs, getArticleUrl, getServiceUrl, products, services } from '../artifacts/api-server/src/lib/nexhse-content.js';
 
 function createServer() {
   const server = new McpServer({ name: 'nexhse-africa', version: '1.0.0' });

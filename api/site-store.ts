@@ -1,6 +1,6 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createShopOrderWithStock, listClientsForUser, listShopOrders, listShopOrdersForEmails, listShopProducts, listShopPromotions, readSiteStoreValue, upsertShopProduct, writeSiteStoreValue } from '@workspace/db';
-import { getActiveAdminSession, isTrustedOrigin } from '../lib/api/admin-session';
+import { getActiveAdminSession, isTrustedOrigin } from '../lib/api/admin-session.js';
 
 const keys = new Set(['nexhse-shop-products', 'nexhse-blog-posts', 'nexhse-shop-orders', 'nexhse-service-tickets']);
 const publicReadKeys = new Set(['nexhse-shop-products', 'nexhse-blog-posts']);
@@ -93,7 +93,8 @@ export default async function handler(req: any, res: any) {
       const deliveryFee = req.body.order.delivery.county.toLowerCase().includes('nairobi') ? 300 : 600;
       const now = new Date();
       const promotionCodes = promotions.filter(promotion => promotionIds.has(promotion.id)).map(promotion => promotion.code);
-      const order = { ...req.body.order, items: pricedItems, subtotal, discount, promotionCode: promotionCodes.join(', ') || null, deliveryFee, total: subtotal + deliveryFee - discount, id: `NX-${now.getTime().toString(36).toUpperCase()}-${randomBytes(4).toString('hex').toUpperCase()}`, createdAt: now.toISOString(), paymentStatus: req.body.order.paymentMethod === 'Pay on delivery' ? 'pending' : 'awaiting confirmation', orderStatus: 'received' };
+      const paymentStatusToken = randomBytes(32).toString('base64url');
+      const order = { ...req.body.order, items: pricedItems, subtotal, discount, promotionCode: promotionCodes.join(', ') || null, deliveryFee, total: subtotal + deliveryFee - discount, id: `NX-${now.getTime().toString(36).toUpperCase()}-${randomBytes(4).toString('hex').toUpperCase()}`, createdAt: now.toISOString(), paymentStatus: req.body.order.paymentMethod === 'Pay on delivery' ? 'pending' : 'awaiting confirmation', orderStatus: 'received', paymentStatusToken };
       await createShopOrderWithStock({
         id: order.id,
         customerName: order.delivery.name,
@@ -104,6 +105,7 @@ export default async function handler(req: any, res: any) {
         notes: order.delivery.notes ?? null,
         paymentMethod: order.paymentMethod,
         paymentStatus: order.paymentStatus,
+        paymentStatusTokenHash: createHash('sha256').update(paymentStatusToken).digest('hex'),
         orderStatus: order.orderStatus,
         promotionCode: order.promotionCode,
         discount: order.discount,
@@ -134,6 +136,6 @@ export default async function handler(req: any, res: any) {
     console.error('site-store API failed', error);
     if (error && typeof error === 'object' && 'statusCode' in error) return res.status(Number(error.statusCode)).json({ error: error instanceof Error ? error.message : 'Order failed' });
     if (error instanceof Error && error.message === 'PROMOTION_UNAVAILABLE') return res.status(409).json({ error: 'Promotion limit was reached. Please refresh your basket.' });
-    return res.status(process.env.DATABASE_URL ? 500 : 503).json({ error: 'Shared persistence is unavailable' });
+    return res.status(process.env.DATABASE_URL || process.env.v0_DATABASE_URL || process.env.nexhsevo_DATABASE_URL ? 500 : 503).json({ error: 'Shared persistence is unavailable' });
   }
 }
